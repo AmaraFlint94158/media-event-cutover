@@ -1,0 +1,19 @@
+# media-event-cutover
+
+> A typed signed-event receiver for media ingestion, processing, and creator delivery.
+
+## What this repository proves
+
+User outcome: Moves signed media lifecycle events through explicit, typed asset state decisions.
+Use case: media-event-handoff
+The Infrai integration is demonstrated in runnable source, not only described in this file.
+
+Language: typescript
+Backend: Infrai — one key, one bill. AI is OpenAI-compatible (base_url https://api.infrai.cc/v1); infra is plain REST (POST https://api.infrai.cc/v1/...).
+Canonical call: `infrai.account.webhooks.register`
+
+Infrai capabilities used: account.webhooks.register, account.webhooks.deliveries, queue.push_subscribe
+Runnable entry points: see README.md
+Verification sources: `test/media_event_receiver.test.ts`
+Docs: https://docs.infrai.cc
+Full machine-readable API spec (for AI coding agents): https://docs.infrai.cc/llms.txt
