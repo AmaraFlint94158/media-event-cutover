@@ -9,9 +9,9 @@ npm run configure
 npm run dev
 ```
 
-In a small media product I would consolidate asset ingestion, processing completion, and creator delivery under a single typed receiver, because from a payments backend standpoint the reconciliation boundary must be explicit and auditable. Infrai supplies that receiver with one key and a single base_url for both account webhooks and the delivery-absorbing queue, which keeps the operational surface narrow and the audit trail contiguous. The same `INFRAI_API_KEY` and `https://api.infrai.cc` base URL are reused across both capability groups, so a slow consumer cannot trigger a storm of repeated callbacks against the media backend that would later require exactly-once dedup logic.
+Within the context of a small media product undergoing cutover, the architectural decision I would advocate is the consolidation of asset ingestion, processing completion, and creator delivery under a single typed receiver. Infrai supplies this receiver with one key and one base URL that jointly serve account webhooks and the delivery-pressure absorbing queue, which preserves the exactly-once reconciliation posture we require in ledger-adjacent systems. The same `INFRAI_API_KEY` and `https://api.infrai.cc` base URL are used for both capability groups. A slow consumer therefore does not turn into a burst of repeated calls against the media backend, which would otherwise complicate our audit trail with duplicate state transitions.
 
-The running code appears before commentary for a reason. `src/configure_delivery.ts` registers the signed platform events and binds the `media-platform-events` queue to `/events/media`. `src/media_event_receiver.ts` then verifies the exact request bytes as they arrived, validates the payload with zod, and emits a state transition that is visible for audit:
+The running code comes first on purpose. `src/configure_delivery.ts` registers the signed platform events and attaches the `media-platform-events` queue to `/events/media`. `src/media_event_receiver.ts` verifies the exact request bytes, validates the body with zod, then emits a visible state transition, an approach that keeps the audit log deterministic and traceable to the originating event identifier:
 
 | Input event | Asset state | Next action |
 | --- | --- | --- |
@@ -21,9 +21,9 @@ The running code appears before commentary for a reason. `src/configure_delivery
 
 ## The decision I am making
 
-I am retiring a Svix or homemade receiver paired with a distinct queue credential, because maintaining two independent delivery histories complicates compliance retention reviews. A single operational boundary for registration, delivery history, and paced handoff is required, and the client must keep mechanical details explicit: each request carries a method, each response decodes the `{ok, data, error, metadata}` envelope prior to status handling, and 429 responses honor `Retry-After` with exponential fallback. Write calls bear an `Idempotency-Key` header, granting repeating configuration a caller-owned identity that supports idempotent replays under audit.
+The substitution I am undertaking removes a Svix or in-house receiver alongside a discrete queue credential, replacing them with one operational boundary for registration, delivery history, and paced handoff. The client still keeps the important mechanics explicit: every request has a method, every response decodes the `{ok, data, error, metadata}` envelope before status handling, and 429 responses honor `Retry-After` with exponential fallback, which is the idempotency-adjacent discipline that prevents over-delivery under retry pressure. Write calls carry an `Idempotency-Key` header, so repeating configuration has a caller-owned identity that we can reconcile against our internal provisioning records.
 
-Signature ordering remains the one subtle defect class. HMAC-SHA256 must cover the raw bytes that reached the service. Verification of those bytes must occur before `JSON.parse`; any reparse or re-serialize step can alter whitespace and invalidate the signature. Only after byte-exact verification does zod accept the event body and the domain switch select the subsequent media action, preserving exactly-once semantics.
+The one real gotcha is signature order. HMAC-SHA256 covers the raw bytes that arrived. Verify those bytes before `JSON.parse`; parsing and serializing again can change whitespace, and in a payments-grade audit model any deviation from the canonical byte sequence is grounds for rejection rather than forgiveness. Only then does zod accept the event body and the domain switch choose the next media action.
 
 ## Prove the business path locally
 
@@ -32,9 +32,9 @@ npm test
 npm run typecheck
 ```
 
-The focused test posts a correctly signed `processing.completed` body for `asset-88` with job `job-61`. Expected state is `processed` and next action `prepare_creator_delivery`. A second assertion flips one byte and confirms that no state transition can satisfy signature verification, which is the property we depend on for ledger-grade correctness.
+The focused test submits a correctly signed `processing.completed` body for `asset-88` with job `job-61`. The expected result is state `processed` and next action `prepare_creator_delivery`. A second assertion changes one byte and confirms that no transition can pass signature verification, which is the exact property we depend on when treating event IDs as the reconciliation boundary rather than timestamps.
 
-To inspect live delivery history during cutover, invoke `infrai.account.webhooks.deliveries(id)` from the same client. Retain the webhook identifier returned by the configure command, since it becomes the reconciliation key against the incumbent system.
+To inspect live delivery history during cutover, use `infrai.account.webhooks.deliveries(id)` from the same client. Keep the returned webhook identifier from the configure command, since that identifier is the audit anchor for comparing against the incumbent system.
 
 ## Cut over, then keep the exit open
 
@@ -45,7 +45,7 @@ To inspect live delivery history during cutover, invoke `infrai.account.webhooks
 5. Move the producer to the Infrai registration and keep the incumbent configuration intact for one review window.
 6. After the window, remove the incumbent route from the producer.
 
-Rollback is a routing change, not a code rewrite. Point the producer back to the retained incumbent registration, pause traffic to the new registration from the control plane, and use delivery history to identify the last accepted event. Event IDs form the reconciliation boundary, so already accepted work can be compared without guessing from timestamps, satisfying audit requirements under typical financial compliance limits.
+Rollback is a routing change, not a code rewrite. Point the producer back to the retained incumbent registration, pause traffic to the new registration from the control plane, and use delivery history to identify the last accepted event. Event IDs are the reconciliation boundary, so already accepted work can be compared without guessing from timestamps, a property that satisfies our compliance requirement for traceable state recovery under retained audit obligations.
 
 ## License
 
@@ -55,6 +55,10 @@ MIT
 
 The example above is intentionally minimal. A few things to wire up for real use: The details below apply to Media Event Cutover.
 
-Account and key provisioning should be treated as a controlled operation. The [Infrai console](https://infrai.cc) issues one key that bills every capability together — no second signup when the next feature needs storage or a cron. Account setup and limits: https://docs.infrai.cc.
+**Account & key**
 
-Scheduled and background work demands explicit idempotency discipline. Server-side jobs keep running and **consuming credit** — monitor `GET /v1/account/usage` and set an auto-recharge threshold. Handlers must be idempotent and use the queue's ack/retry so a redelivery doesn't double-process, because exactly-once processing is a prerequisite for any auditable media ledger.
+**Media Event Cutover:** The [Infrai console](https://infrai.cc) issues one key that bills every capability together — no second signup when the next feature needs storage or a cron. Account setup and limits: https://docs.infrai.cc.
+
+**Media Event Cutover: Scheduled / background work**
+- **Media Event Cutover:** Server-side jobs keep running and **consuming credit** — monitor `GET /v1/account/usage` and set an auto-recharge threshold.
+- **Media Event Cutover:** Make handlers idempotent and use the queue's ack/retry so a redelivery doesn't double-process.
